@@ -1,0 +1,446 @@
+#include "system_monitor.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <ctime>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <unistd.h>
+
+using namespace std;
+
+long long previousTotal = 0;
+long long previousIdle = 0;
+
+string getStatusText(double value)
+{
+    if (value < 0)
+        return "Calculating";
+
+    if (value < 70)
+        return "Normal";
+
+    if (value < 90)
+        return "Warning";
+
+    return "High";
+}
+
+string formatPercent(double value)
+{
+    if (value < 0)
+        return "Calculating...";
+
+    stringstream ss;
+    ss << fixed << setprecision(1) << value << "%";
+    return ss.str();
+}
+
+string getCurrentTimeText()
+{
+    time_t now = time(nullptr);
+    struct tm *localTime = localtime(&now);
+
+    char buffer[64];
+    strftime(buffer, sizeof(buffer), "%H:%M:%S", localTime);
+
+    return string(buffer);
+}
+
+string getSystemHealthStatus(double cpu,
+                             double memory,
+                             double disk,
+                             double swap)
+{
+    if (cpu > 90 ||
+        memory > 90 ||
+        disk > 90 ||
+        swap > 90)
+    {
+        return "High";
+    }
+
+    if (cpu >= 70 ||
+        memory >= 70 ||
+        disk >= 70 ||
+        swap >= 70)
+    {
+        return "Warning";
+    }
+
+    return "Normal";
+}
+
+void addHistorySample(vector<double> &history, double value)
+{
+    const int maxSamples = 60;
+
+    if (value >= 0)
+    {
+        history.push_back(value);
+
+        if ((int)history.size() > maxSamples)
+        {
+            history.erase(history.begin());
+        }
+    }
+}
+
+// ============================================================
+// CPU USAGE
+// ============================================================
+
+double getCPUUsage()
+{
+    ifstream file("/proc/stat");
+
+    if (!file.is_open())
+        return 0.0;
+
+    string cpu;
+
+    long long user = 0;
+    long long nice = 0;
+    long long system = 0;
+    long long idle = 0;
+    long long iowait = 0;
+    long long irq = 0;
+    long long softirq = 0;
+    long long steal = 0;
+
+    file >> cpu
+         >> user
+         >> nice
+         >> system
+         >> idle
+         >> iowait
+         >> irq
+         >> softirq
+         >> steal;
+
+    long long idleTime = idle + iowait;
+
+    long long total =
+        user +
+        nice +
+        system +
+        idle +
+        iowait +
+        irq +
+        softirq +
+        steal;
+
+    // First sample is only a baseline
+    if (previousTotal == 0)
+    {
+        previousTotal = total;
+        previousIdle = idleTime;
+
+        return -1.0;
+    }
+
+    long long totalDifference =
+        total - previousTotal;
+
+    long long idleDifference =
+        idleTime - previousIdle;
+
+    previousTotal = total;
+    previousIdle = idleTime;
+
+    if (totalDifference <= 0)
+        return 0.0;
+
+    double usage =
+        ((double)(totalDifference - idleDifference)
+         / totalDifference) * 100.0;
+
+    if (usage < 0)
+        usage = 0;
+
+    if (usage > 100)
+        usage = 100;
+
+    return usage;
+}
+
+// ============================================================
+// MEMORY USAGE
+// ============================================================
+
+double getMemoryUsage()
+{
+    ifstream file("/proc/meminfo");
+
+    if (!file.is_open())
+        return 0.0;
+
+    string name;
+    long long total = 0;
+    long long available = 0;
+    long long value = 0;
+    string unit;
+
+    while (file >> name >> value >> unit)
+    {
+        if (name == "MemTotal:")
+        {
+            total = value;
+        }
+        else if (name == "MemAvailable:")
+        {
+            available = value;
+        }
+    }
+
+    if (total == 0)
+        return 0.0;
+
+    return ((double)(total - available) / total) * 100.0;
+}
+
+// ============================================================
+// DISK USAGE
+// ============================================================
+
+double getDiskUsage()
+{
+    FILE *pipe =
+        popen("df / | tail -1 | awk '{print $5}'", "r");
+
+    if (!pipe)
+        return 0.0;
+
+    char buffer[64] = {};
+
+    if (fgets(buffer, sizeof(buffer), pipe) == nullptr)
+    {
+        pclose(pipe);
+        return 0.0;
+    }
+
+    pclose(pipe);
+
+    string value(buffer);
+
+    if (!value.empty() && value.back() == '\n')
+        value.pop_back();
+
+    value.erase(
+        remove_if(
+            value.begin(),
+            value.end(),
+            [](unsigned char ch)
+            {
+                return ch == '%';
+            }),
+        value.end());
+
+    try
+    {
+        return stod(value);
+    }
+    catch (...)
+    {
+        return 0.0;
+    }
+}
+
+// ============================================================
+// SWAP USAGE
+// ============================================================
+
+double getSwapUsage()
+{
+    ifstream file("/proc/meminfo");
+
+    if (!file.is_open())
+        return 0.0;
+
+    string name;
+    long long value = 0;
+    string unit;
+
+    long long swapTotal = 0;
+    long long swapFree = 0;
+
+    while (file >> name >> value >> unit)
+    {
+        if (name == "SwapTotal:")
+        {
+            swapTotal = value;
+        }
+        else if (name == "SwapFree:")
+        {
+            swapFree = value;
+        }
+    }
+
+    if (swapTotal == 0)
+        return 0.0;
+
+    return ((double)(swapTotal - swapFree)
+            / swapTotal) * 100.0;
+}
+
+// ============================================================
+// TOTAL MEMORY
+// ============================================================
+
+string getTotalMemory()
+{
+    ifstream file("/proc/meminfo");
+
+    if (!file.is_open())
+        return "Unavailable";
+
+    string name;
+    long long value = 0;
+    string unit;
+
+    while (file >> name >> value >> unit)
+    {
+        if (name == "MemTotal:")
+        {
+            double gb =
+                value / (1024.0 * 1024.0);
+
+            stringstream ss;
+
+            ss << fixed
+               << setprecision(2)
+               << gb
+               << " GB";
+
+            return ss.str();
+        }
+    }
+
+    return "Unavailable";
+}
+
+// ============================================================
+// CPU CORES
+// ============================================================
+
+int getCPUCores()
+{
+    long cores =
+        sysconf(_SC_NPROCESSORS_ONLN);
+
+    if (cores < 1)
+        return 1;
+
+    return (int)cores;
+}
+
+// ============================================================
+// SYSTEM UPTIME
+// ============================================================
+
+string getUptime()
+{
+    ifstream file("/proc/uptime");
+
+    if (!file.is_open())
+        return "Unavailable";
+
+    double seconds = 0;
+
+    file >> seconds;
+
+    int totalSeconds = (int)seconds;
+
+    int hours =
+        totalSeconds / 3600;
+
+    int minutes =
+        (totalSeconds % 3600) / 60;
+
+    int secs =
+        totalSeconds % 60;
+
+    return to_string(hours)
+           + " Hours "
+           + to_string(minutes)
+           + " Minutes "
+           + to_string(secs)
+           + " Seconds";
+}
+
+// ============================================================
+// PROCESS COUNT
+// ============================================================
+
+int getProcessCount()
+{
+    FILE *pipe =
+        popen("ps -e --no-headers | wc -l", "r");
+
+    if (!pipe)
+        return 0;
+
+    char buffer[64] = {};
+
+    fgets(buffer, sizeof(buffer), pipe);
+
+    pclose(pipe);
+
+    try
+    {
+        return stoi(string(buffer));
+    }
+    catch (...)
+    {
+        return 0;
+    }
+}
+
+// ============================================================
+// PROCESS MONITORING
+// ============================================================
+
+vector<ProcessInfo> getProcesses()
+{
+    vector<ProcessInfo> processes;
+
+    FILE *pipe =
+        popen(
+            "ps -eo pid,comm,%cpu,%mem --no-headers",
+            "r");
+
+    if (!pipe)
+        return processes;
+
+    char buffer[512];
+
+    while (fgets(buffer, sizeof(buffer), pipe))
+    {
+        string line(buffer);
+
+        stringstream ss(line);
+
+        ProcessInfo process;
+
+        process.pid = 0;
+        process.cpu = 0.0;
+        process.memory = 0.0;
+
+        ss >> process.pid
+           >> process.name
+           >> process.cpu
+           >> process.memory;
+
+        // Exclude this monitoring program itself
+        if (process.pid > 0 &&
+            process.pid != getpid())
+        {
+            processes.push_back(process);
+        }
+    }
+
+    pclose(pipe);
+
+    return processes;
+}

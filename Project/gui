@@ -1,0 +1,1515 @@
+#include <gtk/gtk.h>
+#include <algorithm>
+#include <cairo.h>
+#include <cmath>
+#include <cstdio>
+#include <ctime>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include "system_monitor.h"
+
+using namespace std;
+
+struct GUIData
+{
+    GtkWidget *cpuLabel;
+    GtkWidget *memoryLabel;
+    GtkWidget *diskLabel;
+    GtkWidget *swapLabel;
+    GtkWidget *totalMemoryLabel;
+    GtkWidget *coresLabel;
+
+    GtkWidget *topCPULabel;
+    GtkWidget *topMemoryLabel;
+    GtkWidget *uptimeLabel;
+    GtkWidget *processCountLabel;
+    GtkWidget *systemHealthLabel;
+    GtkWidget *lastUpdatedLabel;
+
+    GtkWidget *cpuHistoryArea;
+    GtkWidget *memoryHistoryArea;
+
+    GtkWidget *cpuStatusLabel;
+    GtkWidget *memoryStatusLabel;
+    GtkWidget *diskStatusLabel;
+    GtkWidget *swapStatusLabel;
+
+    GtkWidget *cpuProgressBar;
+    GtkWidget *memoryProgressBar;
+    GtkWidget *diskProgressBar;
+    GtkWidget *swapProgressBar;
+
+    vector<double> cpuHistory;
+    vector<double> memoryHistory;
+};
+
+GtkWidget *createCard(
+    const string &title,
+    GtkWidget **valueLabel,
+    GtkWidget **statusLabel,
+    GtkWidget **progressBar)
+{
+    GtkWidget *frame =
+        gtk_frame_new(nullptr);
+
+    GtkWidget *box =
+        gtk_box_new(
+            GTK_ORIENTATION_VERTICAL,
+            8);
+
+    gtk_widget_set_margin_top(box, 15);
+    gtk_widget_set_margin_bottom(box, 15);
+    gtk_widget_set_margin_start(box, 15);
+    gtk_widget_set_margin_end(box, 15);
+
+    GtkWidget *titleLabel =
+        gtk_label_new(title.c_str());
+
+    gtk_label_set_xalign(
+        GTK_LABEL(titleLabel), 0.5);
+
+    *valueLabel =
+        gtk_label_new("Loading...");
+
+    gtk_widget_set_halign(
+        *valueLabel,
+        GTK_ALIGN_CENTER);
+
+    *statusLabel =
+        gtk_label_new("Normal");
+
+    gtk_widget_set_halign(
+        *statusLabel,
+        GTK_ALIGN_CENTER);
+
+    *progressBar =
+        gtk_progress_bar_new();
+
+    gtk_progress_bar_set_show_text(
+        GTK_PROGRESS_BAR(*progressBar),
+        TRUE);
+
+    gtk_progress_bar_set_text(
+        GTK_PROGRESS_BAR(*progressBar),
+        "0%");
+
+    gtk_progress_bar_set_fraction(
+        GTK_PROGRESS_BAR(*progressBar),
+        0.0);
+
+    gtk_widget_set_hexpand(
+        *progressBar,
+        TRUE);
+
+    gtk_box_pack_start(
+        GTK_BOX(box),
+        titleLabel,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(box),
+        *valueLabel,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(box),
+        *statusLabel,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(box),
+        *progressBar,
+        FALSE, FALSE, 0);
+
+    gtk_container_add(
+        GTK_CONTAINER(frame),
+        box);
+
+    return frame;
+}
+
+GtkWidget *createSimpleCard(
+    const string &title,
+    GtkWidget **valueLabel)
+{
+    GtkWidget *frame =
+        gtk_frame_new(nullptr);
+
+    GtkWidget *box =
+        gtk_box_new(
+            GTK_ORIENTATION_VERTICAL,
+            8);
+
+    gtk_widget_set_margin_top(box, 15);
+    gtk_widget_set_margin_bottom(box, 15);
+    gtk_widget_set_margin_start(box, 15);
+    gtk_widget_set_margin_end(box, 15);
+
+    GtkWidget *titleLabel =
+        gtk_label_new(title.c_str());
+
+    *valueLabel =
+        gtk_label_new("Loading...");
+
+    gtk_box_pack_start(
+        GTK_BOX(box),
+        titleLabel,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(box),
+        *valueLabel,
+        FALSE, FALSE, 0);
+
+    gtk_container_add(
+        GTK_CONTAINER(frame),
+        box);
+
+    return frame;
+}
+
+// ============================================================
+// DRAWING GRAPH
+// ============================================================
+
+void drawHistoryGraph(
+    GtkWidget *widget,
+    cairo_t *cr,
+    const vector<double> &history,
+    const string &labelText)
+{
+    GtkAllocation alloc;
+    gtk_widget_get_allocation(widget, &alloc);
+    int width = alloc.width;
+    int height = alloc.height;
+
+    if (width <= 0 || height <= 0)
+        return;
+
+    // Background
+    cairo_set_source_rgb(
+        cr,
+        0.06,
+        0.10,
+        0.16);
+
+    cairo_paint(cr);
+
+    double leftMargin = 40.0;
+    double rightMargin = 15.0;
+    double topMargin = 25.0;
+    double bottomMargin = 25.0;
+
+    double graphWidth =
+        width -
+        leftMargin -
+        rightMargin;
+
+    double graphHeight =
+        height -
+        topMargin -
+        bottomMargin;
+
+    // Grid
+    cairo_set_line_width(cr, 1.0);
+
+    cairo_set_source_rgba(
+        cr,
+        0.6,
+        0.7,
+        0.8,
+        0.25);
+
+    for (int i = 0; i <= 4; ++i)
+    {
+        double y =
+            topMargin +
+            graphHeight *
+            (i / 4.0);
+
+        cairo_move_to(
+            cr,
+            leftMargin,
+            y);
+
+        cairo_line_to(
+            cr,
+            width - rightMargin,
+            y);
+    }
+
+    cairo_stroke(cr);
+
+    // Y-axis labels
+    cairo_set_source_rgb(
+        cr,
+        0.85,
+        0.90,
+        0.95);
+
+    cairo_select_font_face(
+        cr,
+        "Sans",
+        CAIRO_FONT_SLANT_NORMAL,
+        CAIRO_FONT_WEIGHT_NORMAL);
+
+    cairo_set_font_size(cr, 10.0);
+
+    cairo_move_to(
+        cr,
+        5,
+        topMargin + 4);
+
+    cairo_show_text(cr, "100%");
+
+    cairo_move_to(
+        cr,
+        10,
+        height - bottomMargin + 4);
+
+    cairo_show_text(cr, "0%");
+
+    // Graph title
+    cairo_set_font_size(cr, 12.0);
+
+    cairo_move_to(
+        cr,
+        leftMargin,
+        16);
+
+    cairo_show_text(
+        cr,
+        labelText.c_str());
+
+    // No history yet
+    if (history.empty())
+        return;
+
+    // Graph line
+    cairo_set_source_rgb(
+        cr,
+        0.20,
+        0.75,
+        0.95);
+
+    cairo_set_line_width(
+        cr,
+        3.0);
+
+    if (history.size() == 1)
+    {
+        double value = history[0];
+
+        double x =
+            leftMargin +
+            graphWidth / 2.0;
+
+        double y =
+            height -
+            bottomMargin -
+            (value / 100.0) *
+                graphHeight;
+
+        cairo_arc(
+            cr,
+            x,
+            y,
+            4.0,
+            0,
+            2 * M_PI);
+
+        cairo_fill(cr);
+
+        return;
+    }
+
+    for (size_t i = 1;
+         i < history.size();
+         ++i)
+    {
+        double x1 =
+            leftMargin +
+            graphWidth *
+                ((double)(i - 1) /
+                 (history.size() - 1));
+
+        double x2 =
+            leftMargin +
+            graphWidth *
+                ((double)i /
+                 (history.size() - 1));
+
+        double y1 =
+            height -
+            bottomMargin -
+            (history[i - 1] / 100.0) *
+                graphHeight;
+
+        double y2 =
+            height -
+            bottomMargin -
+            (history[i] / 100.0) *
+                graphHeight;
+
+        cairo_move_to(
+            cr,
+            x1,
+            y1);
+
+        cairo_line_to(
+            cr,
+            x2,
+            y2);
+    }
+
+    cairo_stroke(cr);
+}
+
+// ============================================================
+// GTK4 DRAW CALLBACKS
+// ============================================================
+
+static gboolean drawCPUHistoryFunc(
+    GtkWidget *widget,
+    cairo_t *cr,
+    gpointer data)
+{
+
+    GUIData *gui =
+        static_cast<GUIData *>(data);
+
+    drawHistoryGraph(
+        widget,
+        cr,
+        gui->cpuHistory,
+        "CPU Usage History");
+    return FALSE;
+}
+
+static gboolean drawMemoryHistoryFunc(
+    GtkWidget *widget,
+    cairo_t *cr,
+    gpointer data)
+{
+
+    GUIData *gui =
+        static_cast<GUIData *>(data);
+
+    drawHistoryGraph(
+        widget,
+        cr,
+        gui->memoryHistory,
+        "Memory Usage History");
+    return FALSE;
+}
+
+// ============================================================
+// STATUS UPDATERS
+// ============================================================
+
+void updateResourceDisplay(
+    GtkWidget *valueLabel,
+    GtkWidget *statusLabel,
+    GtkWidget *progressBar,
+    double value,
+    const string &labelText)
+{
+    if (value < 0)
+    {
+        gtk_label_set_text(
+            GTK_LABEL(valueLabel),
+            "Calculating...");
+
+        gtk_label_set_text(
+            GTK_LABEL(statusLabel),
+            "Calculating");
+
+        gtk_progress_bar_set_fraction(
+            GTK_PROGRESS_BAR(progressBar),
+            0.0);
+
+        gtk_progress_bar_set_text(
+            GTK_PROGRESS_BAR(progressBar),
+            "Calculating");
+
+        return;
+    }
+
+    string valueText =
+        labelText + formatPercent(value);
+
+    gtk_label_set_text(
+        GTK_LABEL(valueLabel),
+        valueText.c_str());
+
+    string health =
+        getStatusText(value);
+
+    gtk_label_set_text(
+        GTK_LABEL(statusLabel),
+        health.c_str());
+
+    gtk_progress_bar_set_fraction(
+        GTK_PROGRESS_BAR(progressBar),
+        value / 100.0);
+
+    string percentage =
+        formatPercent(value);
+
+    gtk_progress_bar_set_text(
+        GTK_PROGRESS_BAR(progressBar),
+        percentage.c_str());
+}
+
+void updateSimpleValue(
+    GtkWidget *label,
+    const string &text)
+{
+    gtk_label_set_text(
+        GTK_LABEL(label),
+        text.c_str());
+}
+
+// ============================================================
+// UPDATE MONITOR
+// ============================================================
+
+gboolean updateMonitor(gpointer data)
+{
+    GUIData *gui =
+        static_cast<GUIData *>(data);
+
+    // --------------------------------------------------------
+    // CPU
+    // --------------------------------------------------------
+
+    double cpu =
+        getCPUUsage();
+
+    if (cpu >= 0)
+    {
+        addHistorySample(
+            gui->cpuHistory,
+            cpu);
+    }
+
+    updateResourceDisplay(
+        gui->cpuLabel,
+        gui->cpuStatusLabel,
+        gui->cpuProgressBar,
+        cpu,
+        "");
+
+    // --------------------------------------------------------
+    // MEMORY
+    // --------------------------------------------------------
+
+    double memory =
+        getMemoryUsage();
+
+    addHistorySample(
+        gui->memoryHistory,
+        memory);
+
+    updateResourceDisplay(
+        gui->memoryLabel,
+        gui->memoryStatusLabel,
+        gui->memoryProgressBar,
+        memory,
+        "");
+
+    // --------------------------------------------------------
+    // DISK
+    // --------------------------------------------------------
+
+    double disk =
+        getDiskUsage();
+
+    updateResourceDisplay(
+        gui->diskLabel,
+        gui->diskStatusLabel,
+        gui->diskProgressBar,
+        disk,
+        "");
+
+    // --------------------------------------------------------
+    // SWAP
+    // --------------------------------------------------------
+
+    double swap =
+        getSwapUsage();
+
+    updateResourceDisplay(
+        gui->swapLabel,
+        gui->swapStatusLabel,
+        gui->swapProgressBar,
+        swap,
+        "");
+
+    // --------------------------------------------------------
+    // TOTAL MEMORY
+    // --------------------------------------------------------
+
+    updateSimpleValue(
+        gui->totalMemoryLabel,
+        getTotalMemory());
+
+    // --------------------------------------------------------
+    // CPU CORES
+    // --------------------------------------------------------
+
+    string cores =
+        to_string(getCPUCores()) +
+        " Cores";
+
+    updateSimpleValue(
+        gui->coresLabel,
+        cores);
+
+    // --------------------------------------------------------
+    // UPTIME
+    // --------------------------------------------------------
+
+    string uptime =
+        "System Uptime: " +
+        getUptime();
+
+    updateSimpleValue(
+        gui->uptimeLabel,
+        uptime);
+
+    // --------------------------------------------------------
+    // PROCESS COUNT
+    // --------------------------------------------------------
+
+    string processCount =
+        "Running Processes: " +
+        to_string(getProcessCount());
+
+    updateSimpleValue(
+        gui->processCountLabel,
+        processCount);
+
+    // --------------------------------------------------------
+    // SYSTEM HEALTH
+    // --------------------------------------------------------
+
+    string health =
+        getSystemHealthStatus(
+            cpu >= 0 ? cpu : 0,
+            memory,
+            disk,
+            swap);
+
+    updateSimpleValue(
+        gui->systemHealthLabel,
+        "System Health: " + health);
+
+    // --------------------------------------------------------
+    // LAST UPDATED
+    // --------------------------------------------------------
+
+    updateSimpleValue(
+        gui->lastUpdatedLabel,
+        "Last Updated: " +
+            getCurrentTimeText());
+
+    // --------------------------------------------------------
+    // TOP PROCESSES
+    // --------------------------------------------------------
+
+    vector<ProcessInfo> processes =
+        getProcesses();
+
+    if (!processes.empty())
+    {
+        auto topCPU =
+            max_element(
+                processes.begin(),
+                processes.end(),
+                [](const ProcessInfo &a,
+                   const ProcessInfo &b)
+                {
+                    return a.cpu < b.cpu;
+                });
+
+        string topCPUText =
+            topCPU->name +
+            "  —  " +
+            formatPercent(topCPU->cpu) +
+            " CPU";
+
+        updateSimpleValue(
+            gui->topCPULabel,
+            topCPUText);
+
+        auto topMemory =
+            max_element(
+                processes.begin(),
+                processes.end(),
+                [](const ProcessInfo &a,
+                   const ProcessInfo &b)
+                {
+                    return a.memory < b.memory;
+                });
+
+        string topMemoryText =
+            topMemory->name +
+            "  —  " +
+            formatPercent(topMemory->memory) +
+            " Memory";
+
+        updateSimpleValue(
+            gui->topMemoryLabel,
+            topMemoryText);
+    }
+    else
+    {
+        updateSimpleValue(
+            gui->topCPULabel,
+            "No active process available");
+
+        updateSimpleValue(
+            gui->topMemoryLabel,
+            "No active process available");
+    }
+
+    // --------------------------------------------------------
+    // REDRAW GRAPHS
+    // --------------------------------------------------------
+
+    gtk_widget_queue_draw(
+        gui->cpuHistoryArea);
+
+    gtk_widget_queue_draw(
+        gui->memoryHistoryArea);
+
+    return TRUE;
+}
+
+// ============================================================
+// REFRESH BUTTON CALLBACK
+// ============================================================
+
+static void onRefreshClicked(
+    GtkButton *button,
+    gpointer data)
+{
+    (void)button;
+
+    updateMonitor(data);
+}
+
+// ============================================================
+// ABOUT DIALOG
+// ============================================================
+
+static void showAboutDialog(
+    GtkButton *button,
+    gpointer user_data)
+{
+    (void)button;
+    (void)user_data;
+
+    GtkWidget *dialog =
+        gtk_window_new(GTK_WINDOW_TOPLEVEL);
+
+    gtk_window_set_title(
+        GTK_WINDOW(dialog),
+        "About Project");
+
+    gtk_window_set_default_size(
+        GTK_WINDOW(dialog),
+        500,
+        350);
+
+    GtkWidget *box =
+        gtk_box_new(
+            GTK_ORIENTATION_VERTICAL,
+            12);
+
+    gtk_widget_set_margin_top(
+        box,
+        20);
+
+    gtk_widget_set_margin_bottom(
+        box,
+        20);
+
+    gtk_widget_set_margin_start(
+        box,
+        20);
+
+    gtk_widget_set_margin_end(
+        box,
+        20);
+
+    GtkWidget *titleLabel =
+        gtk_label_new(
+            "Linux Resource Monitoring Tool");
+
+    gtk_widget_set_halign(
+        titleLabel,
+        GTK_ALIGN_START);
+
+    GtkWidget *aboutText =
+        gtk_label_new(
+            "Developed by:\n"
+            "2520090008 - Sathish Kumar\n"
+            "2520090016 - P. Rahul\n"
+            "2520090090 - Sai Vihamsh\n\n"
+            "Technology:\n"
+            "C++\n"
+            "GTK4\n"
+            "Linux / Ubuntu / WSL\n"
+            "/proc virtual filesystem\n\n"
+            "Main Concepts:\n"
+            "- CPU Monitoring\n"
+            "- Memory Management\n"
+            "- Disk Monitoring\n"
+            "- Process Monitoring\n"
+            "- Resource Management\n"
+            "- Linux /proc filesystem");
+
+    gtk_label_set_xalign(
+        GTK_LABEL(aboutText),
+        0.0);
+
+    gtk_label_set_yalign(
+        GTK_LABEL(aboutText),
+        0.0);
+
+    gtk_label_set_line_wrap(
+        GTK_LABEL(aboutText),
+        TRUE);
+
+    GtkWidget *closeButton =
+        gtk_button_new_with_label(
+            "Close");
+
+    g_signal_connect_swapped(
+        closeButton,
+        "clicked",
+        G_CALLBACK(gtk_widget_destroy),
+        dialog);
+
+    gtk_box_pack_start(
+        GTK_BOX(box),
+        titleLabel,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(box),
+        aboutText,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(box),
+        closeButton,
+        FALSE, FALSE, 0);
+
+    gtk_container_add(
+        GTK_CONTAINER(dialog),
+        box);
+
+    gtk_window_present(
+        GTK_WINDOW(dialog));
+}
+
+// ============================================================
+// GTK4 CSS THEME
+// ============================================================
+
+void applyTheme(GtkWidget *window)
+{
+    const char *css =
+
+        "window {"
+        "background-color: #f5f8ff;"
+        "color: #1f2a44;"
+        "}"
+
+        "box {"
+        "background-color: transparent;"
+        "}"
+
+        "label {"
+        "color: #1f2a44;"
+        "}"
+
+        "button {"
+        "background: #eaf1ff;"
+        "color: #1f2a44;"
+        "border-radius: 8px;"
+        "padding: 8px 16px;"
+        "}"
+
+        "button:hover {"
+        "background: #d8e6ff;"
+        "}"
+
+        "frame {"
+        "background: #ffffff;"
+        "border: 1px solid #d9e3f5;"
+        "border-radius: 10px;"
+        "}"
+
+        "progressbar {"
+        "min-height: 14px;"
+        "}"
+
+        "progressbar trough {"
+        "background: #edf3ff;"
+        "border-radius: 8px;"
+        "}"
+
+        "progressbar progress {"
+        "background: #60a5fa;"
+        "border-radius: 8px;"
+        "}";
+
+    GtkCssProvider *provider =
+        gtk_css_provider_new();
+
+    gtk_css_provider_load_from_data(
+        provider,
+        css,
+        -1,
+        nullptr);
+
+    gtk_style_context_add_provider_for_screen(
+        gdk_screen_get_default(),
+        GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+    g_object_unref(provider);
+}
+
+// ============================================================
+// ACTIVATE
+// ============================================================
+
+static void activate(
+    GtkApplication *app,
+    gpointer user_data)
+{
+    (void)user_data;
+
+    GtkWidget *window =
+        gtk_application_window_new(app);
+
+    gtk_window_set_title(
+        GTK_WINDOW(window),
+        "Linux Resource Monitoring Tool");
+
+    gtk_window_set_default_size(
+        GTK_WINDOW(window),
+        1000,
+        900);
+
+    applyTheme(window);
+
+    // --------------------------------------------------------
+    // MAIN BOX
+    // --------------------------------------------------------
+
+    GtkWidget *mainBox =
+        gtk_box_new(
+            GTK_ORIENTATION_VERTICAL,
+            15);
+
+    gtk_widget_set_margin_top(
+        mainBox,
+        25);
+
+    gtk_widget_set_margin_bottom(
+        mainBox,
+        25);
+
+    gtk_widget_set_margin_start(
+        mainBox,
+        30);
+
+    gtk_widget_set_margin_end(
+        mainBox,
+        30);
+
+    // --------------------------------------------------------
+    // TITLE
+    // --------------------------------------------------------
+
+    GtkWidget *titleLabel =
+        gtk_label_new(
+            "LINUX RESOURCE MONITORING TOOL\n"
+            "Real-Time System Monitor");
+
+    gtk_label_set_justify(
+        GTK_LABEL(titleLabel),
+        GTK_JUSTIFY_CENTER);
+
+    gtk_box_pack_start(
+        GTK_BOX(mainBox),
+        titleLabel,
+        FALSE, FALSE, 0);
+
+    // --------------------------------------------------------
+    // RESOURCE ROW 1
+    // --------------------------------------------------------
+
+    GtkWidget *row1 =
+        gtk_box_new(
+            GTK_ORIENTATION_HORIZONTAL,
+            15);
+
+    // --------------------------------------------------------
+    // RESOURCE ROW 2
+    // --------------------------------------------------------
+
+    GtkWidget *row2 =
+        gtk_box_new(
+            GTK_ORIENTATION_HORIZONTAL,
+            15);
+
+    GtkWidget *cpuValueLabel = nullptr;
+    GtkWidget *memoryValueLabel = nullptr;
+    GtkWidget *diskValueLabel = nullptr;
+    GtkWidget *swapValueLabel = nullptr;
+
+    GtkWidget *cpuStatusLabel = nullptr;
+    GtkWidget *memoryStatusLabel = nullptr;
+    GtkWidget *diskStatusLabel = nullptr;
+    GtkWidget *swapStatusLabel = nullptr;
+
+    GtkWidget *cpuProgressBar = nullptr;
+    GtkWidget *memoryProgressBar = nullptr;
+    GtkWidget *diskProgressBar = nullptr;
+    GtkWidget *swapProgressBar = nullptr;
+
+    // --------------------------------------------------------
+    // CARDS
+    // --------------------------------------------------------
+
+    GtkWidget *cpuCard =
+        createCard(
+            "CPU USAGE",
+            &cpuValueLabel,
+            &cpuStatusLabel,
+            &cpuProgressBar);
+
+    GtkWidget *memoryCard =
+        createCard(
+            "MEMORY USAGE",
+            &memoryValueLabel,
+            &memoryStatusLabel,
+            &memoryProgressBar);
+
+    GtkWidget *diskCard =
+        createCard(
+            "DISK USAGE",
+            &diskValueLabel,
+            &diskStatusLabel,
+            &diskProgressBar);
+
+    GtkWidget *swapCard =
+        createCard(
+            "SWAP USAGE",
+            &swapValueLabel,
+            &swapStatusLabel,
+            &swapProgressBar);
+
+    GtkWidget *totalMemoryValueLabel =
+        nullptr;
+
+    GtkWidget *totalMemoryCard =
+        createSimpleCard(
+            "TOTAL MEMORY",
+            &totalMemoryValueLabel);
+
+    GtkWidget *coresValueLabel =
+        nullptr;
+
+    GtkWidget *coresCard =
+        createSimpleCard(
+            "CPU CORES",
+            &coresValueLabel);
+
+    // --------------------------------------------------------
+    // EXPAND CARDS
+    // --------------------------------------------------------
+
+    gtk_widget_set_hexpand(
+        cpuCard,
+        TRUE);
+
+    gtk_widget_set_hexpand(
+        memoryCard,
+        TRUE);
+
+    gtk_widget_set_hexpand(
+        diskCard,
+        TRUE);
+
+    gtk_widget_set_hexpand(
+        swapCard,
+        TRUE);
+
+    gtk_widget_set_hexpand(
+        totalMemoryCard,
+        TRUE);
+
+    gtk_widget_set_hexpand(
+        coresCard,
+        TRUE);
+
+    // --------------------------------------------------------
+    // ADD CARDS
+    // --------------------------------------------------------
+
+    gtk_box_pack_start(
+        GTK_BOX(row1),
+        cpuCard,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(row1),
+        memoryCard,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(row1),
+        diskCard,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(row2),
+        swapCard,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(row2),
+        totalMemoryCard,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(row2),
+        coresCard,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(mainBox),
+        row1,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(mainBox),
+        row2,
+        FALSE, FALSE, 0);
+
+    // ========================================================
+    // GRAPH SECTION
+    // ========================================================
+
+    GtkWidget *graphRow =
+        gtk_box_new(
+            GTK_ORIENTATION_HORIZONTAL,
+            20);
+
+    GtkWidget *cpuGraphBox =
+        gtk_box_new(
+            GTK_ORIENTATION_VERTICAL,
+            8);
+
+    GtkWidget *memoryGraphBox =
+        gtk_box_new(
+            GTK_ORIENTATION_VERTICAL,
+            8);
+
+    GtkWidget *cpuGraphTitle =
+        gtk_label_new(
+            "CPU Usage History");
+
+    gtk_label_set_xalign(
+        GTK_LABEL(cpuGraphTitle),
+        0.0);
+
+    GtkWidget *memoryGraphTitle =
+        gtk_label_new(
+            "Memory Usage History");
+
+    gtk_label_set_xalign(
+        GTK_LABEL(memoryGraphTitle),
+        0.0);
+
+    // --------------------------------------------------------
+    // CPU DRAWING AREA
+    // --------------------------------------------------------
+
+    GtkWidget *cpuHistoryArea =
+        gtk_drawing_area_new();
+
+    gtk_widget_set_size_request(
+        cpuHistoryArea,
+        400,
+        200);
+
+    gtk_widget_set_hexpand(
+        cpuHistoryArea,
+        TRUE);
+
+    // --------------------------------------------------------
+    // MEMORY DRAWING AREA
+    // --------------------------------------------------------
+
+    GtkWidget *memoryHistoryArea =
+        gtk_drawing_area_new();
+
+    gtk_widget_set_size_request(
+        memoryHistoryArea,
+        400,
+        200);
+
+    gtk_widget_set_hexpand(
+        memoryHistoryArea,
+        TRUE);
+
+    // IMPORTANT:
+    // Do NOT make drawing areas pointer targets.
+    // This keeps mouse handling normal.
+
+    gtk_box_pack_start(
+        GTK_BOX(cpuGraphBox),
+        cpuGraphTitle,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(cpuGraphBox),
+        cpuHistoryArea,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(memoryGraphBox),
+        memoryGraphTitle,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(memoryGraphBox),
+        memoryHistoryArea,
+        FALSE, FALSE, 0);
+
+    gtk_widget_set_hexpand(
+        cpuGraphBox,
+        TRUE);
+
+    gtk_widget_set_hexpand(
+        memoryGraphBox,
+        TRUE);
+
+    gtk_box_pack_start(
+        GTK_BOX(graphRow),
+        cpuGraphBox,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(graphRow),
+        memoryGraphBox,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(mainBox),
+        graphRow,
+        FALSE, FALSE, 0);
+
+    // ========================================================
+    // TOP CPU
+    // ========================================================
+
+    GtkWidget *topCPUTitle =
+        gtk_label_new(
+            "🔥 TOP CPU CONSUMER");
+
+    gtk_label_set_xalign(
+        GTK_LABEL(topCPUTitle),
+        0.0);
+
+    gtk_box_pack_start(
+        GTK_BOX(mainBox),
+        topCPUTitle,
+        FALSE, FALSE, 0);
+
+    GtkWidget *topCPULabel =
+        gtk_label_new("Loading...");
+
+    gtk_label_set_xalign(
+        GTK_LABEL(topCPULabel),
+        0.0);
+
+    gtk_box_pack_start(
+        GTK_BOX(mainBox),
+        topCPULabel,
+        FALSE, FALSE, 0);
+
+    // ========================================================
+    // TOP MEMORY
+    // ========================================================
+
+    GtkWidget *topMemoryTitle =
+        gtk_label_new(
+            "🧠 TOP MEMORY CONSUMER");
+
+    gtk_label_set_xalign(
+        GTK_LABEL(topMemoryTitle),
+        0.0);
+
+    gtk_box_pack_start(
+        GTK_BOX(mainBox),
+        topMemoryTitle,
+        FALSE, FALSE, 0);
+
+    GtkWidget *topMemoryLabel =
+        gtk_label_new("Loading...");
+
+    gtk_label_set_xalign(
+        GTK_LABEL(topMemoryLabel),
+        0.0);
+
+    gtk_box_pack_start(
+        GTK_BOX(mainBox),
+        topMemoryLabel,
+        FALSE, FALSE, 0);
+
+    // ========================================================
+    // SYSTEM INFORMATION
+    // ========================================================
+
+    GtkWidget *uptimeLabel =
+        gtk_label_new(
+            "System Uptime: Loading...");
+
+    gtk_label_set_xalign(
+        GTK_LABEL(uptimeLabel),
+        0.0);
+
+    gtk_box_pack_start(
+        GTK_BOX(mainBox),
+        uptimeLabel,
+        FALSE, FALSE, 0);
+
+    GtkWidget *processCountLabel =
+        gtk_label_new(
+            "Running Processes: Loading...");
+
+    gtk_label_set_xalign(
+        GTK_LABEL(processCountLabel),
+        0.0);
+
+    gtk_box_pack_start(
+        GTK_BOX(mainBox),
+        processCountLabel,
+        FALSE, FALSE, 0);
+
+    GtkWidget *systemHealthLabel =
+        gtk_label_new(
+            "System Health: Loading...");
+
+    gtk_label_set_xalign(
+        GTK_LABEL(systemHealthLabel),
+        0.0);
+
+    gtk_box_pack_start(
+        GTK_BOX(mainBox),
+        systemHealthLabel,
+        FALSE, FALSE, 0);
+
+    GtkWidget *lastUpdatedLabel =
+        gtk_label_new(
+            "Last Updated: --:--:--");
+
+    gtk_label_set_xalign(
+        GTK_LABEL(lastUpdatedLabel),
+        0.0);
+
+    gtk_box_pack_start(
+        GTK_BOX(mainBox),
+        lastUpdatedLabel,
+        FALSE, FALSE, 0);
+
+    // ========================================================
+    // BUTTONS
+    // ========================================================
+
+    GtkWidget *buttonRow =
+        gtk_box_new(
+            GTK_ORIENTATION_HORIZONTAL,
+            15);
+
+    GtkWidget *refreshButton =
+        gtk_button_new_with_label(
+            "Refresh");
+
+    GtkWidget *aboutButton =
+        gtk_button_new_with_label(
+            "About Project");
+
+    gtk_box_pack_start(
+        GTK_BOX(buttonRow),
+        refreshButton,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(buttonRow),
+        aboutButton,
+        FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(mainBox),
+        buttonRow,
+        FALSE, FALSE, 0);
+
+    // ========================================================
+    // SET MAIN WINDOW CHILD
+    // ========================================================
+
+    gtk_container_add(
+        GTK_CONTAINER(window),
+        mainBox);
+
+    // ========================================================
+    // GUI DATA
+    // ========================================================
+
+    GUIData *gui =
+        new GUIData;
+
+    gui->cpuLabel =
+        cpuValueLabel;
+
+    gui->memoryLabel =
+        memoryValueLabel;
+
+    gui->diskLabel =
+        diskValueLabel;
+
+    gui->swapLabel =
+        swapValueLabel;
+
+    gui->totalMemoryLabel =
+        totalMemoryValueLabel;
+
+    gui->coresLabel =
+        coresValueLabel;
+
+    gui->topCPULabel =
+        topCPULabel;
+
+    gui->topMemoryLabel =
+        topMemoryLabel;
+
+    gui->uptimeLabel =
+        uptimeLabel;
+
+    gui->processCountLabel =
+        processCountLabel;
+
+    gui->systemHealthLabel =
+        systemHealthLabel;
+
+    gui->lastUpdatedLabel =
+        lastUpdatedLabel;
+
+    gui->cpuHistoryArea =
+        cpuHistoryArea;
+
+    gui->memoryHistoryArea =
+        memoryHistoryArea;
+
+    gui->cpuStatusLabel =
+        cpuStatusLabel;
+
+    gui->memoryStatusLabel =
+        memoryStatusLabel;
+
+    gui->diskStatusLabel =
+        diskStatusLabel;
+
+    gui->swapStatusLabel =
+        swapStatusLabel;
+
+    gui->cpuProgressBar =
+        cpuProgressBar;
+
+    gui->memoryProgressBar =
+        memoryProgressBar;
+
+    gui->diskProgressBar =
+        diskProgressBar;
+
+    gui->swapProgressBar =
+        swapProgressBar;
+
+    // ========================================================
+    // DRAW CALLBACKS
+    // ========================================================
+
+    g_signal_connect(
+        cpuHistoryArea,
+        "draw",
+        G_CALLBACK(drawCPUHistoryFunc),
+        gui);
+
+    g_signal_connect(
+        memoryHistoryArea,
+        "draw",
+        G_CALLBACK(drawMemoryHistoryFunc),
+        gui);
+
+    // ========================================================
+    // BUTTON CALLBACKS
+    // ========================================================
+
+    g_signal_connect(
+        refreshButton,
+        "clicked",
+        G_CALLBACK(onRefreshClicked),
+        gui);
+
+    g_signal_connect(
+        aboutButton,
+        "clicked",
+        G_CALLBACK(showAboutDialog),
+        nullptr);
+
+    // ========================================================
+    // AUTO REFRESH
+    // ========================================================
+
+    g_timeout_add(
+        2000,
+        updateMonitor,
+        gui);
+
+    // Initial update
+    updateMonitor(gui);
+
+    // Show window
+    gtk_widget_show_all(window);
+
+    gtk_window_present(
+        GTK_WINDOW(window));
+}
+
+int runGui(int argc, char** argv) {
+    GtkApplication* app = gtk_application_new(
+        "com.sathish.linuxmonitor",
+        G_APPLICATION_DEFAULT_FLAGS
+    );
+
+    g_signal_connect(app, "activate", G_CALLBACK(activate), nullptr);
+
+    int status = g_application_run(G_APPLICATION(app), argc, argv);
+    g_object_unref(app);
+    return status;
+}

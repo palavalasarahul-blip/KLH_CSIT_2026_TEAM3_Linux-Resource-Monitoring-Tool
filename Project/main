@@ -1,0 +1,6 @@
+// Application entry point for Linux Resource Monitoring Tool.
+int runGui(int argc, char** argv);
+
+int main(int argc, char** argv) {
+    return runGui(argc, argv);
+}

@@ -1,0 +1,11 @@
+# Build output
+linux-resource-monitor
+*.o
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
